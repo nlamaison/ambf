@@ -1982,6 +1982,8 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
 
     if(bodyPos.IsDefined()){
         m_initialPos = toXYZ<cVector3d>(&bodyPos);
+        // Account for intertial offset transform
+        m_initialPos += toCvec(m_inertialOffsetTransform.getOrigin());
         setLocalPos(m_initialPos);
     }
 
@@ -2314,6 +2316,10 @@ void afRigidBody::updatePositionFromDynamics()
         // We can set this body to publish it's children joint names in either its AMBF Description file or
         // via it's afCommand using ROS Message
         if (m_publish_joint_names == true || afCommand.publish_joint_names == true){
+            if (m_publish_joint_names == false){
+                m_publish_joint_names = true;
+                afObjectStateSetJointNames();
+            }
             // Since joint names aren't going to change that often
             // change the field less so often
             if (m_write_count % 2000 == 0){
@@ -2330,6 +2336,10 @@ void afRigidBody::updatePositionFromDynamics()
         // We can set this body to publish it's children names in either its AMBF Description file or
         // via it's afCommand using ROS Message
         if (m_publish_children_names == true || afCommand.publish_children_names == true){
+            if (m_publish_children_names == false){
+                m_publish_children_names = true;
+                afObjectStateSetChildrenNames();
+            }
             // Since children names aren't going to change that often
             // change the field less so often
             if (m_write_count % 2000 == 0){
@@ -4172,8 +4182,11 @@ afJoint::~afJoint(){
 }
 
 
+///
+/// \brief afPointCloudsHandler::afPointCloudsHandler
+/// \param a_afWorld
+///
 afPointCloudsHandler::afPointCloudsHandler(afWorldPtr a_afWorld): afBaseObject(a_afWorld){
-
 }
 
 
@@ -4466,6 +4479,15 @@ void afWorld::updateDynamics(double a_interval, double a_wallClock, double a_loo
     // sanity check
     if (a_interval <= 0) { return; }
 
+    if (m_pausePhx){
+        if (m_manualStepPhx > 0){
+            m_manualStepPhx--;
+        }
+        else{
+            return;
+        }
+    }
+
     afExecuteCommand(a_interval);
 
     m_wallClock = a_wallClock;
@@ -4520,6 +4542,8 @@ void afWorld::updatePositionFromDynamics()
 
 #ifdef C_ENABLE_AMBF_COMM_SUPPORT
     if (m_paramsSet == false){
+        // Create a default point cloud to listen to
+        m_afWorldCommPtr->append_point_cloud_topic(m_namespace + m_name + "/" + "point_cloud");
         m_afWorldCommPtr->set_params_on_server();
         m_paramsSet = true;
     }
@@ -4696,19 +4720,22 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
         return 0;
     }
 
+    m_name = "World";
+
     YAML::Node worldEnclosureData = worldNode["enclosure"];
     YAML::Node worldLightsData = worldNode["lights"];
     YAML::Node worldCamerasData = worldNode["cameras"];
     YAML::Node worldEnvironment = worldNode["environment"];
     YAML::Node worldNamespace = worldNode["namespace"];
     YAML::Node worldMaxIterations = worldNode["max iterations"];
+    YAML::Node worldGravity = worldNode["gravity"];
 
     if (worldNamespace.IsDefined()){
         m_namespace = afUtils::removeAdjacentBackSlashes(worldNamespace.as<std::string>());
     }
 
     afCreateCommInstance(afCommType::WORLD,
-                         "World",
+                         m_name,
                          resolveGlobalNamespace(m_namespace),
                          50,
                          2000,
@@ -4724,6 +4751,18 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
             std::cerr << "INFO! IGNORING AND USING MAX ITERATIONS : " << m_maxIterations << std::endl;
         }
     }
+
+    cVector3d gravityVector(0, 0, -9.81);
+
+    if (worldGravity.IsDefined()){
+        double x, y, z;
+        x = worldGravity["x"].as<double>();
+        y = worldGravity["y"].as<double>();
+        z = worldGravity["z"].as<double>();
+        gravityVector.set(x, y, z);
+    }
+
+    setGravity(gravityVector);
 
     if (worldEnclosureData.IsDefined()){
         m_encl_length = worldEnclosureData["length"].as<double>();
@@ -5571,6 +5610,10 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
 
     if(_is_valid){
         m_camera = new cCamera(a_world);
+        m_camera->setLocalPos(0, 0, 0);
+        cMatrix3d I3;
+        I3.identity();
+        m_camera->setLocalRot(I3);
         addChild(m_camera);
 
         if (cameraParent.IsDefined()){
@@ -6028,6 +6071,10 @@ bool afLight::loadLight(YAML::Node* a_light_node, std::string a_light_name, afWo
 
     if (_is_valid){
         m_spotLight = new cSpotLight(a_world);
+        m_spotLight->setLocalPos(0, 0, 0);
+        cMatrix3d I3;
+        I3.identity();
+        m_spotLight->setLocalRot(I3);
         addChild(m_spotLight);
 
         if (lightParent.IsDefined()){
@@ -6038,11 +6085,11 @@ bool afLight::loadLight(YAML::Node* a_light_node, std::string a_light_name, afWo
             a_world->addChild(this);
         }
 
-        m_spotLight->setLocalPos(_location);
-        m_spotLight->setDir(_direction);
+        setLocalPos(_location);
+        setDir(_direction);
 
-        m_initialPos = m_spotLight->getLocalPos();
-        m_initialRot = m_spotLight->getLocalRot();
+        m_initialPos = getLocalPos();
+        m_initialRot = getLocalRot();
 
         m_spotLight->setSpotExponent(_spot_exponent);
         m_spotLight->setCutOffAngleDeg(_cuttoff_angle * (180/3.14));
@@ -6076,6 +6123,48 @@ bool afLight::loadLight(YAML::Node* a_light_node, std::string a_light_name, afWo
     }
 
     return _is_valid;
+}
+
+
+
+///
+/// \brief afLight::setDir COPIED FROM CDirectionalLight.cpp
+/// \param a_direction
+///
+void afLight::setDir(const cVector3d &a_direction){
+    // We arbitrarily point lights along the x axis of the stored
+    // rotation matrix.
+    cVector3d v0, v1, v2, z, y;
+    a_direction.copyto(v0);
+
+    // check vector
+    if (v0.lengthsq() < 0.0001) { return; }
+
+    // normalize direction vector
+    v0.normalize();
+
+    // compute 2 vector perpendicular to a_direction
+    z.set(0.0, 0.0, 1.0);
+    y.set(0.0, 1.0, 0.0);
+    double a0 = cAngle(v0, z);
+    double a1 = cAngle(v0, y);
+
+    if (sin(a0) > sin(a1))
+    {
+        v0.crossr(z, v1);
+        v0.crossr(v1, v2);
+    }
+    else
+    {
+        v0.crossr(y, v1);
+        v0.crossr(v1, v2);
+    }
+
+    v1.normalize();
+    v2.normalize();
+
+    // update rotation matrix
+    m_localRot.setCol(v0,v1,v2);
 }
 
 

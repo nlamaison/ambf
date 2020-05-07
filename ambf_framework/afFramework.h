@@ -571,12 +571,6 @@ protected:
     // cMultiMesh representation of collision mesh
     cMultiMesh m_lowResMesh;
 
-    // Initial location of Rigid Body
-    cVector3d m_initialPos;
-
-    // Initial rotation of Ridig Body
-    cMatrix3d m_initialRot;
-
     // Iterator of connected rigid bodies
     std::vector<afRigidBodyPtr>::const_iterator m_bodyIt;
 
@@ -1374,6 +1368,9 @@ public:
 
     virtual void updatePositionFromDynamics();
 
+    // Set direction of this light
+    void setDir(const cVector3d& a_direction);
+
 protected:
     cSpotLight* m_spotLight;
 
@@ -1439,6 +1436,9 @@ public:
     void getEnclosureExtents(double &length, double &width, double &height);
     inline void pausePhysics(bool pause){m_pausePhx = pause;}
     bool isPhysicsPaused(){return m_pausePhx;}
+    // Used when the Physics is paused
+    inline void stepPhysicsManually(int a_steps){m_manualStepPhx += a_steps;}
+    int getManualSteps(){return m_manualStepPhx;}
     void resetCameras();
     void resetDynamicBodies(bool reset_time=false);
     int getMaxIterations(){return m_maxIterations;}
@@ -1567,6 +1567,10 @@ private:
     cPositionalLight* m_light;
     // Global flag to pause simulation
     bool m_pausePhx = false;
+
+    // Step the simulation by this many steps
+    // Used when the Physics is paused
+    int m_manualStepPhx = 0;
 
     afPointCloudsHandler* m_pointCloudHandlerPtr;
 };
